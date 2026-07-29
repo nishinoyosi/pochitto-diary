@@ -8,6 +8,9 @@
     groups: 'diary_customGroups',
     apiKey: 'diary_apiKey',
     model: 'diary_model',
+    hiddenTags: 'diary_hiddenTags',
+    groupOrder: 'diary_groupOrder',
+    groupOrderCustomized: 'diary_groupOrderCustomized',
   };
 
   var SYNC_KEYS = {
@@ -143,12 +146,16 @@
     entries: loadJSON(STORAGE_KEYS.entries, []),
     customTags: loadJSON(STORAGE_KEYS.tags, []),
     customGroups: loadJSON(STORAGE_KEYS.groups, []),
+    hiddenTagIds: loadJSON(STORAGE_KEYS.hiddenTags, []),
+    groupOrder: loadJSON(STORAGE_KEYS.groupOrder, null),
+    groupOrderCustomized: localStorage.getItem(STORAGE_KEYS.groupOrderCustomized) === '1',
     apiKey: localStorage.getItem(STORAGE_KEYS.apiKey) || '',
     draft: null,
     newTagInput: '',
     newTagGroup: '場所・買い物',
     addingGroup: false,
     newGroupInput: '',
+    tagEditMode: false,
     generating: false,
     genNotice: '',
     toast: '',
@@ -162,14 +169,36 @@
     syncPassphrase: localStorage.getItem(SYNC_KEYS.passphrase) || '',
     syncStatus: 'idle', // idle | syncing | synced | error
     lastSyncedAt: null,
+    calendarMonth: null, // 'YYYY-MM', null = current month
   };
 
   function persistEntries() { saveJSON(STORAGE_KEYS.entries, state.entries); }
   function persistTags() { saveJSON(STORAGE_KEYS.tags, state.customTags); }
   function persistGroups() { saveJSON(STORAGE_KEYS.groups, state.customGroups); }
+  function persistHiddenTags() { saveJSON(STORAGE_KEYS.hiddenTags, state.hiddenTagIds); }
+  function persistGroupOrder() { saveJSON(STORAGE_KEYS.groupOrder, state.groupOrder); }
 
   function allTags() { return DEFAULT_TAGS.concat(state.customTags); }
-  function allGroups() { return TAG_GROUPS.concat(state.customGroups); }
+
+  // Keeps state.groupOrder in sync with the actual set of categories
+  // (default + custom), preserving any manual reordering the user made,
+  // and appending newly-added categories at the end.
+  function reconcileGroupOrder() {
+    var actual = TAG_GROUPS.concat(state.customGroups);
+    if (!Array.isArray(state.groupOrder)) state.groupOrder = actual.slice();
+    state.groupOrder = state.groupOrder.filter(function (g) { return actual.indexOf(g) !== -1; });
+    actual.forEach(function (g) { if (state.groupOrder.indexOf(g) === -1) state.groupOrder.push(g); });
+  }
+  reconcileGroupOrder();
+
+  function allGroups() {
+    reconcileGroupOrder();
+    return state.groupOrder;
+  }
+
+  function isTagHidden(id) { return state.hiddenTagIds.indexOf(id) !== -1; }
+  function visibleTags() { return allTags().filter(function (t) { return !isTagHidden(t.id); }); }
+
   function todayStr() { return toISODateLocal(new Date()); }
 
   // ---------- Actions ----------
@@ -232,10 +261,50 @@
     if (allGroups().indexOf(label) === -1) {
       state.customGroups.push(label);
       persistGroups();
+      reconcileGroupOrder();
+      persistGroupOrder();
     }
     state.newTagGroup = label;
     state.newGroupInput = '';
     state.addingGroup = false;
+    render();
+    if (syncEnabled()) pushToSupabase();
+  }
+
+  // Tags are never truly erased: "deleting" hides a tag from the selection
+  // UI (so past entries that reference it still display correctly).
+  function deleteTag(id) {
+    var tag = allTags().filter(function (t) { return t.id === id; })[0];
+    var label = tag ? tag.label : 'このタグ';
+    if (!window.confirm(label + ' を削除しますか？（過去の記録には影響しません。あとで「非表示にしたタグ」から戻せます）')) return;
+    if (state.hiddenTagIds.indexOf(id) === -1) state.hiddenTagIds.push(id);
+    persistHiddenTags();
+    if (state.draft) state.draft.tags.delete(id);
+    render();
+    if (syncEnabled()) pushToSupabase();
+  }
+
+  function restoreTag(id) {
+    state.hiddenTagIds = state.hiddenTagIds.filter(function (x) { return x !== id; });
+    persistHiddenTags();
+    render();
+    if (syncEnabled()) pushToSupabase();
+  }
+
+  function moveGroupOrder(name, dir) {
+    reconcileGroupOrder();
+    var idx = state.groupOrder.indexOf(name);
+    if (idx === -1) return;
+    var newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= state.groupOrder.length) return;
+    var arr = state.groupOrder.slice();
+    var tmp = arr[idx];
+    arr[idx] = arr[newIdx];
+    arr[newIdx] = tmp;
+    state.groupOrder = arr;
+    persistGroupOrder();
+    state.groupOrderCustomized = true;
+    localStorage.setItem(STORAGE_KEYS.groupOrderCustomized, '1');
     render();
     if (syncEnabled()) pushToSupabase();
   }
@@ -433,6 +502,8 @@
       entries: state.entries,
       customTags: state.customTags,
       customGroups: state.customGroups,
+      hiddenTagIds: state.hiddenTagIds,
+      groupOrder: state.groupOrder,
       exportedAt: Date.now(),
     });
   }
@@ -474,6 +545,23 @@
       if (allGroups().indexOf(g) === -1) state.customGroups.push(g);
     });
     persistGroups();
+
+    // Hidden tags: union of both devices' hidden lists (once hidden on
+    // either device, it stays hidden after merging).
+    var incomingHidden = Array.isArray(imported.hiddenTagIds) ? imported.hiddenTagIds : [];
+    incomingHidden.forEach(function (id) {
+      if (state.hiddenTagIds.indexOf(id) === -1) state.hiddenTagIds.push(id);
+    });
+    persistHiddenTags();
+
+    // Category order: only adopt the incoming order if this device hasn't
+    // manually reordered categories itself, so a device that already
+    // reordered isn't silently overridden by another device's order.
+    if (!state.groupOrderCustomized && Array.isArray(imported.groupOrder)) {
+      state.groupOrder = imported.groupOrder.slice();
+    }
+    reconcileGroupOrder();
+    persistGroupOrder();
   }
 
   // ---------- Auto sync (Supabase) ----------
@@ -491,7 +579,13 @@
     if (!syncEnabled()) return;
     try {
       var keyHash = await sha256Hex(state.syncPassphrase);
-      var payload = { entries: state.entries, customTags: state.customTags, customGroups: state.customGroups };
+      var payload = {
+        entries: state.entries,
+        customTags: state.customTags,
+        customGroups: state.customGroups,
+        hiddenTagIds: state.hiddenTagIds,
+        groupOrder: state.groupOrder,
+      };
       var res = await fetch(state.syncUrl.replace(/\/$/, '') + '/rest/v1/diary_sync', {
         method: 'POST',
         headers: {
@@ -610,11 +704,74 @@
     return html;
   }
 
-  function renderList() {
-    if (state.entries.length === 0) {
-      return '<div class="empty-note">まだ記録がありません。ホームから今日の記録をつけてみましょう。</div>';
+  function shiftMonth(monthStr, delta) {
+    var parts = monthStr.split('-');
+    var y = parseInt(parts[0], 10);
+    var m = parseInt(parts[1], 10) - 1;
+    var d = new Date(y, m + delta, 1);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  }
+
+  function renderCalendar() {
+    var monthStr = state.calendarMonth || todayStr().slice(0, 7);
+    var parts = monthStr.split('-');
+    var y = parseInt(parts[0], 10);
+    var m = parseInt(parts[1], 10) - 1;
+    var daysInMonth = new Date(y, m + 1, 0).getDate();
+    var startWeekday = new Date(y, m, 1).getDay();
+    var todayS = todayStr();
+
+    var byDate = {};
+    var entryByDate = {};
+    state.entries.forEach(function (e) {
+      byDate[e.date] = getStatus(e);
+      entryByDate[e.date] = e;
+    });
+
+    var html = '<div class="cal-header">' +
+      '<button class="cal-nav" data-action="cal-prev">‹</button>' +
+      '<span class="cal-title mincho">' + y + '年' + (m + 1) + '月</span>' +
+      '<button class="cal-nav" data-action="cal-next">›</button>' +
+      '</div>';
+
+    html += '<div class="cal-grid cal-weekdays">';
+    ['日', '月', '火', '水', '木', '金', '土'].forEach(function (w) {
+      html += '<div class="cal-weekday">' + w + '</div>';
+    });
+    html += '</div>';
+
+    html += '<div class="cal-grid">';
+    for (var i = 0; i < startWeekday; i++) html += '<div class="cal-cell empty"></div>';
+    for (var day = 1; day <= daysInMonth; day++) {
+      var dateStr = y + '-' + String(m + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+      var status = byDate[dateStr];
+      var cls = 'cal-cell';
+      if (dateStr === todayS) cls += ' today';
+      if (status) cls += ' has-entry ' + status;
+      var entry = entryByDate[dateStr];
+      html += '<div class="' + cls + '"' + (entry ? ' data-action="open-entry" data-id="' + escapeHtml(entry.id) + '"' : '') + '>' +
+        '<span class="cal-daynum">' + day + '</span>' +
+        (status ? '<span class="cal-dot"></span>' : '') +
+        '</div>';
     }
-    return state.entries.map(function (e) {
+    html += '</div>';
+
+    html += '<div class="cal-legend">' +
+      '<span class="legend-item"><span class="cal-dot-icon done"></span>確定済み</span>' +
+      '<span class="legend-item"><span class="cal-dot-icon draft"></span>下書きのみ</span>' +
+      '</div>';
+
+    return html;
+  }
+
+  function renderList() {
+    var html = renderCalendar();
+    html += '<div class="section-label">すべての記録</div>';
+    if (state.entries.length === 0) {
+      html += '<div class="empty-note">まだ記録がありません。ホームから今日の記録をつけてみましょう。</div>';
+      return html;
+    }
+    html += state.entries.map(function (e) {
       var mood = MOODS.filter(function (m) { return m.value === e.mood; })[0];
       var status = getStatus(e);
       var tags = (e.tags || []).map(function (tid) {
@@ -632,6 +789,7 @@
         '<div class="entry-text">' + escapeHtml(text) + '</div>' +
         '</div>';
     }).join('');
+    return html;
   }
 
   function renderRecord() {
@@ -645,17 +803,52 @@
     });
     html += '</div>';
 
-    html += '<div class="field-label">今日したこと・行った場所</div>';
-    allGroups().forEach(function (group) {
-      var groupTags = allTags().filter(function (t) { return t.group === group; });
-      if (groupTags.length === 0) return;
-      html += '<div class="tag-group-title">' + escapeHtml(group) + '</div><div class="tag-wrap">';
-      groupTags.forEach(function (t) {
-        var selected = d.tags.has(t.id);
-        html += '<button class="chip ' + (selected ? 'selected' : '') + '" data-action="toggle-tag" data-id="' + escapeHtml(t.id) + '">' + escapeHtml(t.label) + '</button>';
+    html += '<div class="field-label-row">' +
+      '<div class="field-label" style="margin:0;">今日したこと・行った場所</div>' +
+      '<button class="tag-edit-toggle" data-action="toggle-tag-edit">' + (state.tagEditMode ? '編集を終了' : 'タグを編集') + '</button>' +
+      '</div>';
+
+    if (!state.tagEditMode) {
+      allGroups().forEach(function (group) {
+        var groupTags = visibleTags().filter(function (t) { return t.group === group; });
+        if (groupTags.length === 0) return;
+        html += '<div class="tag-group-title">' + escapeHtml(group) + '</div><div class="tag-wrap">';
+        groupTags.forEach(function (t) {
+          var selected = d.tags.has(t.id);
+          html += '<button class="chip ' + (selected ? 'selected' : '') + '" data-action="toggle-tag" data-id="' + escapeHtml(t.id) + '">' + escapeHtml(t.label) + '</button>';
+        });
+        html += '</div>';
       });
-      html += '</div>';
-    });
+    } else {
+      html += '<div class="empty-note" style="margin-bottom:14px;">タップでタグを削除、▲▼でカテゴリの表示順を変えられます。</div>';
+      var groups = allGroups();
+      groups.forEach(function (group, gi) {
+        var groupTags = allTags().filter(function (t) { return t.group === group && !isTagHidden(t.id); });
+        html += '<div class="tag-group-title edit-row">' +
+          '<span>' + escapeHtml(group) + '</span>' +
+          '<span class="group-move-btns">' +
+          '<button class="cal-nav" data-action="move-group-up" data-group="' + escapeHtml(group) + '" ' + (gi === 0 ? 'disabled' : '') + '>▲</button>' +
+          '<button class="cal-nav" data-action="move-group-down" data-group="' + escapeHtml(group) + '" ' + (gi === groups.length - 1 ? 'disabled' : '') + '>▼</button>' +
+          '</span></div>';
+        if (groupTags.length === 0) {
+          html += '<div class="empty-note" style="margin-bottom:10px;">このカテゴリにはタグがありません</div>';
+        } else {
+          html += '<div class="tag-wrap">';
+          groupTags.forEach(function (t) {
+            html += '<button class="chip chip-deletable" data-action="delete-tag" data-id="' + escapeHtml(t.id) + '">' + escapeHtml(t.label) + ' ✕</button>';
+          });
+          html += '</div>';
+        }
+      });
+      var hidden = allTags().filter(function (t) { return isTagHidden(t.id); });
+      if (hidden.length > 0) {
+        html += '<div class="tag-group-title">非表示にしたタグ</div><div class="tag-wrap">';
+        hidden.forEach(function (t) {
+          html += '<button class="chip chip-restorable" data-action="restore-tag" data-id="' + escapeHtml(t.id) + '">' + escapeHtml(t.label) + ' ↺</button>';
+        });
+        html += '</div>';
+      }
+    }
 
     html += '<div class="add-tag-group-row"><span class="add-tag-group-label">追加先：</span>';
     allGroups().forEach(function (g) {
@@ -810,6 +1003,13 @@
         }
         case 'set-mood': state.draft.mood = parseInt(btn.getAttribute('data-value'), 10); render(); break;
         case 'toggle-tag': toggleTag(btn.getAttribute('data-id')); break;
+        case 'toggle-tag-edit': state.tagEditMode = !state.tagEditMode; render(); break;
+        case 'delete-tag': deleteTag(btn.getAttribute('data-id')); break;
+        case 'restore-tag': restoreTag(btn.getAttribute('data-id')); break;
+        case 'move-group-up': moveGroupOrder(btn.getAttribute('data-group'), -1); break;
+        case 'move-group-down': moveGroupOrder(btn.getAttribute('data-group'), 1); break;
+        case 'cal-prev': state.calendarMonth = shiftMonth(state.calendarMonth || todayStr().slice(0, 7), -1); render(); break;
+        case 'cal-next': state.calendarMonth = shiftMonth(state.calendarMonth || todayStr().slice(0, 7), 1); render(); break;
         case 'set-new-tag-group': state.newTagGroup = btn.getAttribute('data-group'); render(); break;
         case 'show-add-group': state.addingGroup = true; render(); focusSoon('[data-bind="newGroupInput"]'); break;
         case 'cancel-add-group': state.addingGroup = false; state.newGroupInput = ''; render(); break;
