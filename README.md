@@ -87,6 +87,58 @@ git push -u origin main
 公開後にURLが変わったら、`manifest.json` の `start_url` / `scope` は
 相対パス（`./`）のままで問題ありません。
 
+## 自動同期を使う（複数端末・Supabase）
+
+スマホとPCなど複数端末で自動的にデータを同期したい場合は、無料のSupabaseを使えます。
+使わなくてもアプリ自体は動くので、任意の機能です。
+
+### 1. Supabaseプロジェクトを作る
+
+1. https://supabase.com でアカウント作成 → 「New Project」
+2. プロジェクト作成後、左メニューの「SQL Editor」を開き、以下を実行してテーブルを作成：
+
+```sql
+create table if not exists diary_sync (
+  sync_key text primary key,
+  payload jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
+alter table diary_sync enable row level security;
+
+create policy "allow anon full access"
+on diary_sync
+for all
+to anon
+using (true)
+with check (true);
+```
+
+3. 左メニュー「Project Settings」→「API」から、**Project URL** と **anon public key** をコピーしておく
+
+### 2. アプリ側で設定する
+
+1. アプリ右上の⚙設定を開く
+2. 「自動同期（Supabase）」欄に、Project URL・anon public key・**同期パスフレーズ**（自分で決める、長めのランダムな文字列）を入力
+3. 「同期を有効にする」を押す
+4. **同じ3つの値（特に同期パスフレーズ）を、もう一方の端末にも同じように入力する**
+
+これで、下書き保存・確定保存のたびに自動でクラウドへ送信され、アプリを開き直したときや
+画面に戻ってきたときに自動で最新データを取り込むようになります。
+
+### セキュリティ上の注意（重要）
+
+この仕組みは、あなた一人のための簡易的な同期です。**同期パスフレーズが実質的な
+パスワード**になっています。上記のanonキーとパスフレーズを知っている人は誰でも
+そのデータを読み書きできてしまうため：
+
+- パスフレーズは他人に教えない
+- 短い単語ではなく、長くランダムな文字列にする（例: 特定の単語の羅列＋数字など）
+- 本格的な会員制サービスのような安全性は保証されない、簡易的な仕組みだと理解した上で使う
+
+より厳密なセキュリティが必要になった場合は、Supabase Authによるログイン機能を
+追加する拡張も可能ですが、フェーズ1の範囲では扱っていません。
+
 ## 既知の制限（フェーズ1の範囲）
 
 - 複数端末間のデータ同期はありません（この端末だけに保存されます）

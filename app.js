@@ -10,6 +10,12 @@
     model: 'diary_model',
   };
 
+  var SYNC_KEYS = {
+    url: 'diary_syncUrl',
+    anonKey: 'diary_syncAnonKey',
+    passphrase: 'diary_syncPassphrase',
+  };
+
   var DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 
   // ---------- Static data ----------
@@ -148,6 +154,14 @@
     toast: '',
     showStamp: false,
     showSettings: false,
+    exportText: '',
+    importInput: '',
+    importNotice: '',
+    syncUrl: localStorage.getItem(SYNC_KEYS.url) || '',
+    syncAnonKey: localStorage.getItem(SYNC_KEYS.anonKey) || '',
+    syncPassphrase: localStorage.getItem(SYNC_KEYS.passphrase) || '',
+    syncStatus: 'idle', // idle | syncing | synced | error
+    lastSyncedAt: null,
   };
 
   function persistEntries() { saveJSON(STORAGE_KEYS.entries, state.entries); }
@@ -205,6 +219,7 @@
     if (state.draft) state.draft.tags.add(id);
     state.newTagInput = '';
     render();
+    if (syncEnabled()) pushToSupabase();
   }
 
   function addCustomGroup() {
@@ -222,6 +237,7 @@
     state.newGroupInput = '';
     state.addingGroup = false;
     render();
+    if (syncEnabled()) pushToSupabase();
   }
 
   function buildPrompt(moodLabel, tagLabels, memo) {
@@ -339,6 +355,7 @@
     state.toast = '下書きを保存しました。あとでまとめて日記にできます。';
     render();
     scheduleToastClear();
+    if (syncEnabled()) pushToSupabase();
   }
 
   function handleSave() {
@@ -385,6 +402,7 @@
     persistEntries();
     state.showStamp = true;
     render();
+    if (syncEnabled()) pushToSupabase();
     setTimeout(function () {
       state.showStamp = false;
       state.draft = null;
@@ -407,6 +425,112 @@
     if (key) localStorage.setItem(STORAGE_KEYS.apiKey, key);
     else localStorage.removeItem(STORAGE_KEYS.apiKey);
     state.showSettings = false;
+    render();
+  }
+
+  function exportDataString() {
+    return JSON.stringify({
+      entries: state.entries,
+      customTags: state.customTags,
+      customGroups: state.customGroups,
+      exportedAt: Date.now(),
+    });
+  }
+
+  // Merge data exported from another device into this device's storage.
+  // Entries are merged by id (newest updatedAt wins). If two different
+  // entries exist for the same date (created independently on two devices
+  // before ever syncing), only the most recently updated one is kept, since
+  // the app's model assumes one entry per date.
+  function mergeImportedData(imported) {
+    var incomingEntries = Array.isArray(imported.entries) ? imported.entries : [];
+    var byId = {};
+    state.entries.forEach(function (e) { byId[e.id] = e; });
+    incomingEntries.forEach(function (e) {
+      var existing = byId[e.id];
+      if (!existing || (e.updatedAt || 0) > (existing.updatedAt || 0)) {
+        byId[e.id] = e;
+      }
+    });
+    var merged = Object.keys(byId).map(function (k) { return byId[k]; });
+
+    var byDate = {};
+    merged.forEach(function (e) {
+      var cur = byDate[e.date];
+      if (!cur || (e.updatedAt || 0) > (cur.updatedAt || 0)) byDate[e.date] = e;
+    });
+    state.entries = Object.keys(byDate).map(function (k) { return byDate[k]; })
+      .sort(function (a, b) { return b.date.localeCompare(a.date); });
+    persistEntries();
+
+    var incomingTags = Array.isArray(imported.customTags) ? imported.customTags : [];
+    incomingTags.forEach(function (t) {
+      if (!state.customTags.some(function (x) { return x.id === t.id; })) state.customTags.push(t);
+    });
+    persistTags();
+
+    var incomingGroups = Array.isArray(imported.customGroups) ? imported.customGroups : [];
+    incomingGroups.forEach(function (g) {
+      if (allGroups().indexOf(g) === -1) state.customGroups.push(g);
+    });
+    persistGroups();
+  }
+
+  // ---------- Auto sync (Supabase) ----------
+  function syncEnabled() {
+    return !!(state.syncUrl && state.syncAnonKey && state.syncPassphrase);
+  }
+
+  async function sha256Hex(text) {
+    var enc = new TextEncoder().encode(text);
+    var hash = await crypto.subtle.digest('SHA-256', enc);
+    return Array.from(new Uint8Array(hash)).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+  }
+
+  async function pushToSupabase() {
+    if (!syncEnabled()) return;
+    try {
+      var keyHash = await sha256Hex(state.syncPassphrase);
+      var payload = { entries: state.entries, customTags: state.customTags, customGroups: state.customGroups };
+      var res = await fetch(state.syncUrl.replace(/\/$/, '') + '/rest/v1/diary_sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: state.syncAnonKey,
+          Authorization: 'Bearer ' + state.syncAnonKey,
+          Prefer: 'resolution=merge-duplicates',
+        },
+        body: JSON.stringify([{ sync_key: keyHash, payload: payload, updated_at: new Date().toISOString() }]),
+      });
+      if (!res.ok) throw new Error('push_failed_' + res.status);
+      state.syncStatus = 'synced';
+      state.lastSyncedAt = Date.now();
+    } catch (e) {
+      console.error('同期(送信)に失敗しました', e);
+      state.syncStatus = 'error';
+    }
+    render();
+  }
+
+  async function pullFromSupabase(silent) {
+    if (!syncEnabled()) return;
+    try {
+      var keyHash = await sha256Hex(state.syncPassphrase);
+      var url = state.syncUrl.replace(/\/$/, '') + '/rest/v1/diary_sync?sync_key=eq.' + encodeURIComponent(keyHash) + '&select=payload,updated_at';
+      var res = await fetch(url, {
+        headers: { apikey: state.syncAnonKey, Authorization: 'Bearer ' + state.syncAnonKey },
+      });
+      if (!res.ok) throw new Error('pull_failed_' + res.status);
+      var rows = await res.json();
+      if (rows && rows.length > 0 && rows[0].payload) {
+        mergeImportedData(rows[0].payload);
+      }
+      state.syncStatus = 'synced';
+      state.lastSyncedAt = Date.now();
+    } catch (e) {
+      console.error('同期(取得)に失敗しました', e);
+      if (!silent) state.syncStatus = 'error';
+    }
     render();
   }
 
@@ -573,6 +697,12 @@
   }
 
   function renderSettings() {
+    var syncOn = syncEnabled();
+    var syncStatusText = '';
+    if (state.syncStatus === 'syncing') syncStatusText = '同期中…';
+    else if (state.syncStatus === 'error') syncStatusText = '同期エラー。URL・キー・通信環境を確認してください。';
+    else if (state.syncStatus === 'synced' && state.lastSyncedAt) syncStatusText = '最終同期: ' + new Date(state.lastSyncedAt).toLocaleString('ja-JP');
+
     return '<div class="settings-overlay" id="settings-overlay">' +
       '<div class="settings-card">' +
       '<div class="settings-title mincho">設定</div>' +
@@ -581,6 +711,36 @@
       '<label class="settings-label">Anthropic APIキー</label>' +
       '<input type="password" class="settings-input" data-bind="apiKeyInput" placeholder="sk-ant-..." value="' + escapeHtml(state.apiKey) + '" />' +
       '<div class="settings-hint">console.anthropic.com で発行できます</div>' +
+
+      '<div class="settings-divider"></div>' +
+      '<div class="settings-label">自動同期（Supabase）' + (syncOn ? '　✓ 有効' : '') + '</div>' +
+      '<div class="settings-desc">設定すると、スマホとPCなど複数端末で自動的にデータが同期されます。' +
+      '同期パスフレーズは実質的なパスワードです。他人に教えず、長めの文字列にしてください。</div>' +
+      '<label class="settings-label">Project URL</label>' +
+      '<input type="text" class="settings-input" data-bind="syncUrlInput" placeholder="https://xxxx.supabase.co" value="' + escapeHtml(state.syncUrl) + '" />' +
+      '<label class="settings-label">anon public key</label>' +
+      '<input type="password" class="settings-input" data-bind="syncAnonKeyInput" placeholder="eyJhbGciOi..." value="' + escapeHtml(state.syncAnonKey) + '" />' +
+      '<label class="settings-label">同期パスフレーズ</label>' +
+      '<input type="password" class="settings-input" data-bind="syncPassphraseInput" placeholder="長めのランダムな文字列" value="' + escapeHtml(state.syncPassphrase) + '" />' +
+      '<div class="settings-actions">' +
+      '<button class="save-btn" data-action="enable-sync">' + (syncOn ? '設定を更新' : '同期を有効にする') + '</button>' +
+      (syncOn ? '<button class="ghost-btn" data-action="sync-now">今すぐ同期</button>' : '') +
+      '</div>' +
+      (syncStatusText ? '<div class="settings-hint">' + escapeHtml(syncStatusText) + '</div>' : '') +
+      (syncOn ? '<button class="reset-link" data-action="disable-sync">同期を無効にする</button>' : '') +
+
+      '<div class="settings-divider"></div>' +
+      '<div class="settings-label">手動バックアップ（同期を使わない場合）</div>' +
+      '<div class="settings-desc">自動同期を使わない場合、エクスポートした内容をコピーして他の端末に貼り付けることでも移行できます。</div>' +
+      '<button class="ghost-btn full" data-action="export-data">この端末のデータをエクスポート</button>' +
+      (state.exportText
+        ? '<textarea class="settings-input mono-area" readonly data-bind="exportOutput">' + escapeHtml(state.exportText) + '</textarea>' +
+          '<button class="ghost-btn full" data-action="copy-export">コピーする</button>'
+        : '') +
+      '<textarea class="settings-input mono-area" placeholder="他の端末でエクスポートした内容をここに貼り付け" data-bind="importInput">' + escapeHtml(state.importInput) + '</textarea>' +
+      '<button class="save-btn full" data-action="import-data">読み込む（追加）</button>' +
+      (state.importNotice ? '<div class="gen-notice">' + escapeHtml(state.importNotice) + '</div>' : '') +
+
       '<div class="settings-actions">' +
       '<button class="save-btn" data-action="save-api-key">保存</button>' +
       '<button class="ghost-btn" data-action="close-settings">閉じる</button>' +
@@ -662,6 +822,55 @@
         case 'open-settings': state.showSettings = true; render(); break;
         case 'close-settings': state.showSettings = false; render(); break;
         case 'save-api-key': saveApiKeyFromInput(); break;
+        case 'enable-sync': {
+          localStorage.setItem(SYNC_KEYS.url, state.syncUrl || '');
+          localStorage.setItem(SYNC_KEYS.anonKey, state.syncAnonKey || '');
+          localStorage.setItem(SYNC_KEYS.passphrase, state.syncPassphrase || '');
+          state.syncStatus = 'syncing';
+          render();
+          pullFromSupabase(false).then(function () { return pushToSupabase(); });
+          break;
+        }
+        case 'sync-now': {
+          state.syncStatus = 'syncing';
+          render();
+          pullFromSupabase(false).then(function () { return pushToSupabase(); });
+          break;
+        }
+        case 'disable-sync': {
+          state.syncUrl = '';
+          state.syncAnonKey = '';
+          state.syncPassphrase = '';
+          localStorage.removeItem(SYNC_KEYS.url);
+          localStorage.removeItem(SYNC_KEYS.anonKey);
+          localStorage.removeItem(SYNC_KEYS.passphrase);
+          state.syncStatus = 'idle';
+          render();
+          break;
+        }
+        case 'export-data': state.exportText = exportDataString(); render(); break;
+        case 'copy-export': {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(state.exportText)
+              .then(function () { state.importNotice = 'コピーしました。もう片方の端末に貼り付けてください。'; render(); })
+              .catch(function () { state.importNotice = 'コピーに失敗しました。テキストを手動で選択してコピーしてください。'; render(); });
+          }
+          break;
+        }
+        case 'import-data': {
+          var importEl = document.querySelector('[data-bind="importInput"]');
+          var text = importEl ? importEl.value.trim() : '';
+          try {
+            var parsed = JSON.parse(text);
+            mergeImportedData(parsed);
+            state.importInput = '';
+            state.importNotice = '読み込みました。閉じてホーム画面で確認してください。';
+          } catch (err) {
+            state.importNotice = '読み込みに失敗しました。コピーした内容をそのまま貼り付けているか確認してください。';
+          }
+          render();
+          break;
+        }
       }
       return;
     }
@@ -681,6 +890,10 @@
       case 'newGroupInput': state.newGroupInput = el.value; break;
       case 'draftMemo': if (state.draft) state.draft.memo = el.value; break;
       case 'draftEditedText': if (state.draft) state.draft.editedText = el.value; break;
+      case 'importInput': state.importInput = el.value; break;
+      case 'syncUrlInput': state.syncUrl = el.value; break;
+      case 'syncAnonKeyInput': state.syncAnonKey = el.value; break;
+      case 'syncPassphraseInput': state.syncPassphrase = el.value; break;
       default: break;
     }
     // Deliberately not calling render() here so the input keeps focus/caret.
@@ -711,4 +924,13 @@
   // ---------- Init ----------
   render();
   registerServiceWorker();
+
+  if (syncEnabled()) {
+    pullFromSupabase(true);
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && syncEnabled()) {
+      pullFromSupabase(true);
+    }
+  });
 })();
