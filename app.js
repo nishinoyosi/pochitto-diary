@@ -11,6 +11,9 @@
     hiddenTags: 'diary_hiddenTags',
     groupOrder: 'diary_groupOrder',
     groupOrderCustomized: 'diary_groupOrderCustomized',
+    aiProvider: 'diary_aiProvider',
+    geminiApiKey: 'diary_geminiApiKey',
+    geminiModel: 'diary_geminiModel',
   };
 
   var SYNC_KEYS = {
@@ -20,6 +23,7 @@
   };
 
   var DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
+  var DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
   // ---------- Static data ----------
   var MOODS = [
@@ -150,6 +154,10 @@
     groupOrder: loadJSON(STORAGE_KEYS.groupOrder, null),
     groupOrderCustomized: localStorage.getItem(STORAGE_KEYS.groupOrderCustomized) === '1',
     apiKey: localStorage.getItem(STORAGE_KEYS.apiKey) || '',
+    aiProvider: localStorage.getItem(STORAGE_KEYS.aiProvider) || 'anthropic',
+    anthropicModel: localStorage.getItem(STORAGE_KEYS.model) || DEFAULT_MODEL,
+    geminiApiKey: localStorage.getItem(STORAGE_KEYS.geminiApiKey) || '',
+    geminiModel: localStorage.getItem(STORAGE_KEYS.geminiModel) || DEFAULT_GEMINI_MODEL,
     draft: null,
     newTagInput: '',
     newTagGroup: '場所・買い物',
@@ -309,6 +317,61 @@
     if (syncEnabled()) pushToSupabase();
   }
 
+  function callAnthropic(prompt) {
+    return fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': state.apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: state.anthropicModel || DEFAULT_MODEL,
+        max_tokens: 300,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error('api_error_' + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        var text = (data.content || [])
+          .filter(function (b) { return b.type === 'text'; })
+          .map(function (b) { return b.text; })
+          .join('')
+          .trim();
+        if (!text) throw new Error('empty');
+        return text;
+      });
+  }
+
+  function callGemini(prompt) {
+    var model = state.geminiModel || DEFAULT_GEMINI_MODEL;
+    return fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': state.geminiApiKey,
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+      }),
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error('api_error_' + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        var candidate = (data.candidates || [])[0];
+        var parts = candidate && candidate.content && candidate.content.parts ? candidate.content.parts : [];
+        var text = parts.map(function (p) { return p.text || ''; }).join('').trim();
+        if (!text) throw new Error('empty');
+        return text;
+      });
+  }
+
   function buildPrompt(moodLabel, tagLabels, memo) {
     return '以下の情報から、日本語で自然な一人称の日記文を2〜3文で作成してください。' +
       '淡々とした一日の記録として書き、誇張や過度な感情表現は避けてください。' +
@@ -341,38 +404,17 @@
       render();
     }
 
-    if (!state.apiKey) {
+    var activeKey = state.aiProvider === 'gemini' ? state.geminiApiKey : state.apiKey;
+    if (!activeKey) {
       finishWithFallback('APIキー未設定のため、簡易文を作成しました。右上の設定からAPIキーを登録すると、AIが自然な文章を作ってくれます。');
       return;
     }
 
     var prompt = buildPrompt(moodLabel, tagLabels, memo);
+    var call = state.aiProvider === 'gemini' ? callGemini(prompt) : callAnthropic(prompt);
 
-    fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': state.apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model: localStorage.getItem(STORAGE_KEYS.model) || DEFAULT_MODEL,
-        max_tokens: 300,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    })
-      .then(function (res) {
-        if (!res.ok) throw new Error('api_error_' + res.status);
-        return res.json();
-      })
-      .then(function (data) {
-        var text = (data.content || [])
-          .filter(function (b) { return b.type === 'text'; })
-          .map(function (b) { return b.text; })
-          .join('')
-          .trim();
-        if (!text) throw new Error('empty');
+    call
+      .then(function (text) {
         state.draft.generatedText = text;
         state.draft.editedText = text;
         state.generating = false;
@@ -487,12 +529,30 @@
     render();
   }
 
-  function saveApiKeyFromInput() {
-    var input = document.querySelector('[data-bind="apiKeyInput"]');
-    var key = input ? input.value.trim() : '';
-    state.apiKey = key;
-    if (key) localStorage.setItem(STORAGE_KEYS.apiKey, key);
-    else localStorage.removeItem(STORAGE_KEYS.apiKey);
+  function saveAiSettings() {
+    var anthKeyEl = document.querySelector('[data-bind="apiKeyInput"]');
+    var anthModelEl = document.querySelector('[data-bind="anthropicModelInput"]');
+    var geminiKeyEl = document.querySelector('[data-bind="geminiApiKeyInput"]');
+    var geminiModelEl = document.querySelector('[data-bind="geminiModelInput"]');
+
+    if (anthKeyEl) {
+      state.apiKey = anthKeyEl.value.trim();
+      if (state.apiKey) localStorage.setItem(STORAGE_KEYS.apiKey, state.apiKey);
+      else localStorage.removeItem(STORAGE_KEYS.apiKey);
+    }
+    if (anthModelEl) {
+      state.anthropicModel = anthModelEl.value.trim() || DEFAULT_MODEL;
+      localStorage.setItem(STORAGE_KEYS.model, state.anthropicModel);
+    }
+    if (geminiKeyEl) {
+      state.geminiApiKey = geminiKeyEl.value.trim();
+      if (state.geminiApiKey) localStorage.setItem(STORAGE_KEYS.geminiApiKey, state.geminiApiKey);
+      else localStorage.removeItem(STORAGE_KEYS.geminiApiKey);
+    }
+    if (geminiModelEl) {
+      state.geminiModel = geminiModelEl.value.trim() || DEFAULT_GEMINI_MODEL;
+      localStorage.setItem(STORAGE_KEYS.geminiModel, state.geminiModel);
+    }
     state.showSettings = false;
     render();
   }
@@ -899,11 +959,27 @@
     return '<div class="settings-overlay" id="settings-overlay">' +
       '<div class="settings-card">' +
       '<div class="settings-title mincho">設定</div>' +
-      '<div class="settings-desc">AIによる日記の自動生成を使うには、ご自身のAnthropic APIキーを登録してください。' +
-      'キーはこの端末のブラウザ内にのみ保存され、Anthropic以外には送信されません。未設定でも、簡易文での日記作成は引き続き使えます。</div>' +
-      '<label class="settings-label">Anthropic APIキー</label>' +
-      '<input type="password" class="settings-input" data-bind="apiKeyInput" placeholder="sk-ant-..." value="' + escapeHtml(state.apiKey) + '" />' +
-      '<div class="settings-hint">console.anthropic.com で発行できます</div>' +
+      '<div class="settings-desc">AIによる日記の自動生成を使う場合、どちらかのAIサービスのAPIキーを登録してください。' +
+      'キーはこの端末のブラウザ内にのみ保存され、選んだAI以外には送信されません。未設定でも、簡易文での日記作成は引き続き使えます。</div>' +
+
+      '<label class="settings-label">使用するAI</label>' +
+      '<div class="provider-toggle">' +
+      '<button class="provider-btn ' + (state.aiProvider === 'anthropic' ? 'selected' : '') + '" data-action="set-provider" data-provider="anthropic">Claude（Anthropic）</button>' +
+      '<button class="provider-btn ' + (state.aiProvider === 'gemini' ? 'selected' : '') + '" data-action="set-provider" data-provider="gemini">Gemini（Google）</button>' +
+      '</div>' +
+
+      (state.aiProvider === 'anthropic'
+        ? '<label class="settings-label">Anthropic APIキー</label>' +
+          '<input type="password" class="settings-input" data-bind="apiKeyInput" placeholder="sk-ant-..." value="' + escapeHtml(state.apiKey) + '" />' +
+          '<label class="settings-label">モデル名</label>' +
+          '<input type="text" class="settings-input" data-bind="anthropicModelInput" value="' + escapeHtml(state.anthropicModel) + '" />' +
+          '<div class="settings-hint">console.anthropic.com で発行できます（無料枠なし）</div>'
+        : '<label class="settings-label">Gemini APIキー</label>' +
+          '<input type="password" class="settings-input" data-bind="geminiApiKeyInput" placeholder="AIzaSy..." value="' + escapeHtml(state.geminiApiKey) + '" />' +
+          '<label class="settings-label">モデル名</label>' +
+          '<input type="text" class="settings-input" data-bind="geminiModelInput" value="' + escapeHtml(state.geminiModel) + '" />' +
+          '<div class="settings-hint">aistudio.google.com/apikey で無料発行できます</div>'
+      ) +
 
       '<div class="settings-divider"></div>' +
       '<div class="settings-label">自動同期（Supabase）' + (syncOn ? '　✓ 有効' : '') + '</div>' +
@@ -1021,7 +1097,13 @@
         case 'reset-all': resetAll(); break;
         case 'open-settings': state.showSettings = true; render(); break;
         case 'close-settings': state.showSettings = false; render(); break;
-        case 'save-api-key': saveApiKeyFromInput(); break;
+        case 'save-api-key': saveAiSettings(); break;
+        case 'set-provider': {
+          state.aiProvider = btn.getAttribute('data-provider');
+          localStorage.setItem(STORAGE_KEYS.aiProvider, state.aiProvider);
+          render();
+          break;
+        }
         case 'enable-sync': {
           localStorage.setItem(SYNC_KEYS.url, state.syncUrl || '');
           localStorage.setItem(SYNC_KEYS.anonKey, state.syncAnonKey || '');
@@ -1094,6 +1176,10 @@
       case 'syncUrlInput': state.syncUrl = el.value; break;
       case 'syncAnonKeyInput': state.syncAnonKey = el.value; break;
       case 'syncPassphraseInput': state.syncPassphrase = el.value; break;
+      case 'apiKeyInput': state.apiKey = el.value; break;
+      case 'anthropicModelInput': state.anthropicModel = el.value; break;
+      case 'geminiApiKeyInput': state.geminiApiKey = el.value; break;
+      case 'geminiModelInput': state.geminiModel = el.value; break;
       default: break;
     }
     // Deliberately not calling render() here so the input keeps focus/caret.
