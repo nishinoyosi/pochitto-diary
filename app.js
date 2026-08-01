@@ -34,31 +34,48 @@
     { value: 5, emoji: '😞', label: '悪い' },
   ];
 
-  var TAG_GROUPS = ['場所・買い物', '外食', '日課', 'その他'];
+  var TAG_GROUPS = ['起床時間', '食事', '場所・買い物', '外食', '日課', 'その他'];
 
   var DEFAULT_TAGS = [
-    { id: 'okey', label: 'オーケー', group: '場所・買い物' },
-    { id: 'biga', label: 'BigA', group: '場所・買い物' },
-    { id: 'maibasuke', label: 'まいばすけっと', group: '場所・買い物' },
-    { id: 'senia', label: 'セニア', group: '場所・買い物' },
-    { id: 'hyakkin', label: '100均', group: '場所・買い物' },
+    // 起床時間
+    { id: 'wake_6', label: '6時', group: '起床時間' },
+    { id: 'wake_7', label: '7時', group: '起床時間' },
+    { id: 'wake_8', label: '8時', group: '起床時間' },
+    // 食事
+    { id: 'breakfast', label: '朝食', group: '食事' },
+    { id: 'lunch', label: '昼食', group: '食事' },
+    { id: 'dinner', label: '夕食', group: '食事' },
+    { id: 'snack', label: 'おやつ', group: '食事' },
+    { id: 'between_meals', label: '間食', group: '食事' },
+    // 場所・買い物
+    { id: 'school', label: '学校', group: '場所・買い物' },
+    { id: 'work', label: '会社', group: '場所・買い物' },
+    { id: 'seven', label: 'セブン', group: '場所・買い物' },
     { id: 'lawson', label: 'ローソン', group: '場所・買い物' },
+    { id: 'famima', label: 'ファミマ', group: '場所・買い物' },
+    { id: 'aeon', label: 'イオン', group: '場所・買い物' },
+    // 外食
     { id: 'yoshinoya', label: '吉野家', group: '外食' },
-    { id: 'matsunoya', label: '松のや', group: '外食' },
     { id: 'mac', label: 'マック', group: '外食' },
-    { id: 'tamaku', label: '多摩区役所食堂', group: '外食' },
-    { id: 'hidakaya', label: '日高屋', group: '外食' },
-    { id: 'genkai', label: '玄海', group: '外食' },
-    { id: 'tamagawa_walk', label: '多摩川散歩', group: '日課' },
-    { id: 'library', label: '多摩川図書館', group: '日課' },
-    { id: 'sento', label: '宿河原銭湯', group: '日課' },
-    { id: 'training', label: '筋トレ', group: '日課' },
-    { id: 'youtube', label: 'Youtube視聴', group: '日課' },
-    { id: 'invest', label: '投資チェック', group: '日課' },
-    { id: 'cooking', label: 'レンジ料理', group: '日課' },
-    { id: 'roblox', label: 'Roblox制作', group: '日課' },
+    { id: 'starbucks', label: 'スタバ', group: '外食' },
+    { id: 'hanamaru', label: 'はなまる', group: '外食' },
+    // 日課
     { id: 'reading', label: '読書', group: '日課' },
+    { id: 'tv', label: 'TV視聴', group: '日課' },
+    { id: 'youtube', label: 'Youtube視聴', group: '日課' },
+    { id: 'anime', label: 'アニメ視聴', group: '日課' },
+    { id: 'drama', label: 'ドラマ視聴', group: '日課' },
+    { id: 'movie', label: '映画視聴', group: '日課' },
+    { id: 'walk', label: '散歩', group: '日課' },
+    { id: 'cooking', label: '料理', group: '日課' },
+    { id: 'laundry', label: '洗濯', group: '日課' },
+    { id: 'cleaning', label: '掃除', group: '日課' },
     { id: 'jpop', label: 'Jpop視聴', group: '日課' },
+    { id: 'invest', label: '投資', group: '日課' },
+    { id: 'training', label: '筋トレ', group: '日課' },
+    { id: 'golf', label: 'ゴルフ', group: '日課' },
+    { id: 'study', label: '資格勉強', group: '日課' },
+    { id: 'homework', label: '宿題', group: '日課' },
   ];
 
   // ---------- Utilities ----------
@@ -982,7 +999,7 @@
       ) +
 
       '<div class="settings-divider"></div>' +
-      '<div class="settings-label">自動同期（Supabase）' + (syncOn ? '　✓ 有効' : '') + '</div>' +
+      '<div class="settings-label">自動同期（Supabase）' + (syncOn ? ' ✓ 有効' : '') + '</div>' +
       '<div class="settings-desc">設定すると、スマホとPCなど複数端末で自動的にデータが同期されます。' +
       '同期パスフレーズは実質的なパスワードです。他人に教えず、長めの文字列にしてください。</div>' +
       '<label class="settings-label">Project URL</label>' +
