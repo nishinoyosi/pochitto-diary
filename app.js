@@ -34,48 +34,31 @@
     { value: 5, emoji: '😞', label: '悪い' },
   ];
 
-  var TAG_GROUPS = ['起床時間', '食事', '場所・買い物', '外食', '日課', 'その他'];
+  var TAG_GROUPS = ['場所・買い物', '外食', '日課', 'その他'];
 
   var DEFAULT_TAGS = [
-    // 起床時間
-    { id: 'wake_6', label: '6時', group: '起床時間' },
-    { id: 'wake_7', label: '7時', group: '起床時間' },
-    { id: 'wake_8', label: '8時', group: '起床時間' },
-    // 食事
-    { id: 'breakfast', label: '朝食', group: '食事' },
-    { id: 'lunch', label: '昼食', group: '食事' },
-    { id: 'dinner', label: '夕食', group: '食事' },
-    { id: 'snack', label: 'おやつ', group: '食事' },
-    { id: 'between_meals', label: '間食', group: '食事' },
-    // 場所・買い物
-    { id: 'school', label: '学校', group: '場所・買い物' },
-    { id: 'work', label: '会社', group: '場所・買い物' },
-    { id: 'seven', label: 'セブン', group: '場所・買い物' },
+    { id: 'okey', label: 'オーケー', group: '場所・買い物' },
+    { id: 'biga', label: 'BigA', group: '場所・買い物' },
+    { id: 'maibasuke', label: 'まいばすけっと', group: '場所・買い物' },
+    { id: 'senia', label: 'セニア', group: '場所・買い物' },
+    { id: 'hyakkin', label: '100均', group: '場所・買い物' },
     { id: 'lawson', label: 'ローソン', group: '場所・買い物' },
-    { id: 'famima', label: 'ファミマ', group: '場所・買い物' },
-    { id: 'aeon', label: 'イオン', group: '場所・買い物' },
-    // 外食
     { id: 'yoshinoya', label: '吉野家', group: '外食' },
+    { id: 'matsunoya', label: '松のや', group: '外食' },
     { id: 'mac', label: 'マック', group: '外食' },
-    { id: 'starbucks', label: 'スタバ', group: '外食' },
-    { id: 'hanamaru', label: 'はなまる', group: '外食' },
-    // 日課
-    { id: 'reading', label: '読書', group: '日課' },
-    { id: 'tv', label: 'TV視聴', group: '日課' },
-    { id: 'youtube', label: 'Youtube視聴', group: '日課' },
-    { id: 'anime', label: 'アニメ視聴', group: '日課' },
-    { id: 'drama', label: 'ドラマ視聴', group: '日課' },
-    { id: 'movie', label: '映画視聴', group: '日課' },
-    { id: 'walk', label: '散歩', group: '日課' },
-    { id: 'cooking', label: '料理', group: '日課' },
-    { id: 'laundry', label: '洗濯', group: '日課' },
-    { id: 'cleaning', label: '掃除', group: '日課' },
-    { id: 'jpop', label: 'Jpop視聴', group: '日課' },
-    { id: 'invest', label: '投資', group: '日課' },
+    { id: 'tamaku', label: '多摩区役所食堂', group: '外食' },
+    { id: 'hidakaya', label: '日高屋', group: '外食' },
+    { id: 'genkai', label: '玄海', group: '外食' },
+    { id: 'tamagawa_walk', label: '多摩川散歩', group: '日課' },
+    { id: 'library', label: '多摩川図書館', group: '日課' },
+    { id: 'sento', label: '宿河原銭湯', group: '日課' },
     { id: 'training', label: '筋トレ', group: '日課' },
-    { id: 'golf', label: 'ゴルフ', group: '日課' },
-    { id: 'study', label: '資格勉強', group: '日課' },
-    { id: 'homework', label: '宿題', group: '日課' },
+    { id: 'youtube', label: 'Youtube視聴', group: '日課' },
+    { id: 'invest', label: '投資チェック', group: '日課' },
+    { id: 'cooking', label: 'レンジ料理', group: '日課' },
+    { id: 'roblox', label: 'Roblox制作', group: '日課' },
+    { id: 'reading', label: '読書', group: '日課' },
+    { id: 'jpop', label: 'Jpop視聴', group: '日課' },
   ];
 
   // ---------- Utilities ----------
@@ -390,12 +373,30 @@
   }
 
   function buildPrompt(moodLabel, tagLabels, memo) {
-    return '以下の情報から、日本語で自然な一人称の日記文を2〜3文で作成してください。' +
-      '淡々とした一日の記録として書き、誇張や過度な感情表現は避けてください。' +
-      '日記本文のみを出力し、前置き・タイトル・鍵括弧は付けないでください。\n\n' +
+    return 'あなたは、自然で読みやすい日記を書く編集者です。\n' +
+      '以下の「気分」「行動・場所のタグ」「ひとことメモ」をもとに、\n' +
+      '本人が実際に書いたような、温度感のある日記を作成してください。\n\n' +
+      '【最優先の情報源】\n' +
+      '- 「ひとことメモ」の内容が、その日の中心的な出来事です。必ずこれを軸にする。\n' +
+      '- 「行動・場所のタグ」は背景情報。メモと関係が薄いものは無理に触れなくてよい。すべてを羅列しない。\n' +
+      '- メモにない人物名、場所、出来事、会話、天気などを創作しない。分からない情報は書かない。\n\n' +
+      '【気分の扱い】\n' +
+      '- 「気分は' + moodLabel + 'だった」のように直接書かない。\n' +
+      '- 気分は、文章のトーン・言葉選び・視点に自然に反映させる。\n\n' +
+      '【文体】\n' +
+      '- 自然な日本語。丁寧すぎず、くだけすぎない。\n' +
+      '- AIが書いたような定型表現・きれいなまとめを避ける。\n' +
+      '- 感情を大げさに表現しすぎない。\n' +
+      '- 同じ語尾を連続させない。一文を長くしすぎない。\n' +
+      '- 読者に話しかけない。\n' +
+      '- きれいに締めすぎず、少し余白のある終わり方にする。\n\n' +
+      '【長さ】\n' +
+      '- 情報量に応じて2〜6文程度。メモが短い日は短く、多い日は長くする。\n' +
+      '- 文字数を埋めるための創作・水増しはしない。\n\n' +
       '気分: ' + moodLabel + '\n' +
-      '行動・場所: ' + (tagLabels.length ? tagLabels.join('、') : '特になし') + '\n' +
-      'メモ: ' + (memo && memo.trim() ? memo.trim() : 'なし');
+      '行動・場所（背景情報）: ' + (tagLabels.length ? tagLabels.join('、') : '特になし') + '\n' +
+      'ひとことメモ（これが中心）: ' + (memo && memo.trim() ? memo.trim() : 'なし') + '\n\n' +
+      '日記本文のみを出力し、前置き・タイトル・鍵括弧は付けないでください。';
   }
 
   function handleGenerate() {
@@ -999,7 +1000,7 @@
       ) +
 
       '<div class="settings-divider"></div>' +
-      '<div class="settings-label">自動同期（Supabase）' + (syncOn ? ' ✓ 有効' : '') + '</div>' +
+      '<div class="settings-label">自動同期（Supabase）' + (syncOn ? '　✓ 有効' : '') + '</div>' +
       '<div class="settings-desc">設定すると、スマホとPCなど複数端末で自動的にデータが同期されます。' +
       '同期パスフレーズは実質的なパスワードです。他人に教えず、長めの文字列にしてください。</div>' +
       '<label class="settings-label">Project URL</label>' +
