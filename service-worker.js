@@ -1,9 +1,10 @@
-var CACHE_NAME = 'pochitto-diary-v1';
+var CACHE_NAME = 'pochitto-diary-v2';
 var ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './prompt-template.js',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',

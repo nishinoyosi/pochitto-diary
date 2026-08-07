@@ -14,6 +14,7 @@
     aiProvider: 'diary_aiProvider',
     geminiApiKey: 'diary_geminiApiKey',
     geminiModel: 'diary_geminiModel',
+    promptTemplate: 'diary_promptTemplate',
   };
 
   var SYNC_KEYS = {
@@ -96,6 +97,20 @@
     return entry.status || (entry.generatedText ? 'done' : 'draft');
   }
 
+  // Entries store tags as {id, label} snapshots taken at save time, so a
+  // tag's historical label is permanent even if the tag is later hidden,
+  // renamed, or removed from the global tag list. Older entries saved
+  // before this change may still have plain id strings; for those we fall
+  // back to a live lookup (best effort) so nothing breaks.
+  function tagRefId(ref) {
+    return (ref && typeof ref === 'object') ? ref.id : ref;
+  }
+  function tagRefLabel(ref) {
+    if (ref && typeof ref === 'object' && ref.label) return ref.label;
+    var t = allTags().filter(function (x) { return x.id === ref; })[0];
+    return t ? t.label : null;
+  }
+
   function fallbackText(moodLabel, tagLabels, memo) {
     var s = '';
     if (tagLabels.length > 0) {
@@ -158,6 +173,7 @@
     anthropicModel: localStorage.getItem(STORAGE_KEYS.model) || DEFAULT_MODEL,
     geminiApiKey: localStorage.getItem(STORAGE_KEYS.geminiApiKey) || '',
     geminiModel: localStorage.getItem(STORAGE_KEYS.geminiModel) || DEFAULT_GEMINI_MODEL,
+    promptTemplate: localStorage.getItem(STORAGE_KEYS.promptTemplate) || '',
     draft: null,
     newTagInput: '',
     newTagGroup: '場所・買い物',
@@ -211,7 +227,7 @@
 
   // ---------- Actions ----------
   function newDraft(dateStr) {
-    return { date: dateStr, mood: 3, tags: new Set(), memo: '', generatedText: '', editedText: '', editingId: null };
+    return { date: dateStr, mood: 3, tags: new Set(), tagLabels: {}, memo: '', generatedText: '', editedText: '', editingId: null };
   }
 
   function startToday() {
@@ -227,10 +243,17 @@
   }
 
   function openEntry(entry) {
+    var tagLabels = {};
+    (entry.tags || []).forEach(function (ref) {
+      var id = tagRefId(ref);
+      var label = tagRefLabel(ref);
+      if (id) tagLabels[id] = label || id;
+    });
     state.draft = {
       date: entry.date,
       mood: entry.mood,
-      tags: new Set(entry.tags || []),
+      tags: new Set((entry.tags || []).map(tagRefId)),
+      tagLabels: tagLabels,
       memo: entry.memo || '',
       generatedText: entry.generatedText || '',
       editedText: entry.editedText || entry.generatedText || '',
@@ -239,6 +262,26 @@
     state.genNotice = '';
     state.view = 'record';
     render();
+  }
+
+  // Finds the chronologically nearest saved entry before/after the given
+  // date (skipping empty days), for the prev/next navigation in the record
+  // view. direction: -1 = older (previous), +1 = newer (next).
+  function findAdjacentEntry(currentDate, direction) {
+    var candidates = state.entries.filter(function (e) {
+      return direction < 0 ? e.date < currentDate : e.date > currentDate;
+    });
+    if (candidates.length === 0) return null;
+    candidates.sort(function (a, b) {
+      return direction < 0 ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date);
+    });
+    return candidates[0];
+  }
+
+  function goToAdjacentEntry(direction) {
+    if (!state.draft) return;
+    var target = findAdjacentEntry(state.draft.date, direction);
+    if (target) openEntry(target);
   }
 
   function toggleTag(id) {
@@ -284,10 +327,9 @@
   function deleteTag(id) {
     var tag = allTags().filter(function (t) { return t.id === id; })[0];
     var label = tag ? tag.label : 'このタグ';
-    if (!window.confirm(label + ' を削除しますか？（過去の記録には影響しません。あとで「非表示にしたタグ」から戻せます）')) return;
+    if (!window.confirm(label + ' を今後の選択肢から外しますか？（過去の記録の表示は変わりません。あとで「非表示にしたタグ」から戻せます）')) return;
     if (state.hiddenTagIds.indexOf(id) === -1) state.hiddenTagIds.push(id);
     persistHiddenTags();
-    if (state.draft) state.draft.tags.delete(id);
     render();
     if (syncEnabled()) pushToSupabase();
   }
@@ -372,31 +414,20 @@
       });
   }
 
+  // The actual wording lives in prompt-template.js (window.DIARY_PROMPT_TEMPLATE)
+  // so it's easy to inspect or replace outright, and can also be overridden
+  // per-device from Settings without touching any file.
+  function activePromptTemplate() {
+    return state.promptTemplate || window.DIARY_PROMPT_TEMPLATE || '{{mood}} / {{tags}} / {{memo}}';
+  }
+
   function buildPrompt(moodLabel, tagLabels, memo) {
-    return 'あなたは、自然で読みやすい日記を書く編集者です。\n' +
-      '以下の「気分」「行動・場所のタグ」「ひとことメモ」をもとに、\n' +
-      '本人が実際に書いたような、温度感のある日記を作成してください。\n\n' +
-      '【最優先の情報源】\n' +
-      '- 「ひとことメモ」の内容が、その日の中心的な出来事です。必ずこれを軸にする。\n' +
-      '- 「行動・場所のタグ」は背景情報。メモと関係が薄いものは無理に触れなくてよい。すべてを羅列しない。\n' +
-      '- メモにない人物名、場所、出来事、会話、天気などを創作しない。分からない情報は書かない。\n\n' +
-      '【気分の扱い】\n' +
-      '- 「気分は' + moodLabel + 'だった」のように直接書かない。\n' +
-      '- 気分は、文章のトーン・言葉選び・視点に自然に反映させる。\n\n' +
-      '【文体】\n' +
-      '- 自然な日本語。丁寧すぎず、くだけすぎない。\n' +
-      '- AIが書いたような定型表現・きれいなまとめを避ける。\n' +
-      '- 感情を大げさに表現しすぎない。\n' +
-      '- 同じ語尾を連続させない。一文を長くしすぎない。\n' +
-      '- 読者に話しかけない。\n' +
-      '- きれいに締めすぎず、少し余白のある終わり方にする。\n\n' +
-      '【長さ】\n' +
-      '- 情報量に応じて2〜6文程度。メモが短い日は短く、多い日は長くする。\n' +
-      '- 文字数を埋めるための創作・水増しはしない。\n\n' +
-      '気分: ' + moodLabel + '\n' +
-      '行動・場所（背景情報）: ' + (tagLabels.length ? tagLabels.join('、') : '特になし') + '\n' +
-      'ひとことメモ（これが中心）: ' + (memo && memo.trim() ? memo.trim() : 'なし') + '\n\n' +
-      '日記本文のみを出力し、前置き・タイトル・鍵括弧は付けないでください。';
+    var tagsText = tagLabels.length ? tagLabels.join('、') : '特になし';
+    var memoText = memo && memo.trim() ? memo.trim() : 'なし';
+    return activePromptTemplate()
+      .split('{{mood}}').join(moodLabel)
+      .split('{{tags}}').join(tagsText)
+      .split('{{memo}}').join(memoText);
   }
 
   function handleGenerate() {
@@ -445,6 +476,21 @@
       });
   }
 
+  // Builds the {id, label} snapshot array to persist on an entry, using the
+  // draft's own remembered labels first (so a tag's original label survives
+  // even if it's later hidden/removed), falling back to the current live
+  // tag list for anything newly toggled in this session.
+  function snapshotDraftTags(draft) {
+    return Array.from(draft.tags).map(function (id) {
+      var label = (draft.tagLabels && draft.tagLabels[id]) || null;
+      if (!label) {
+        var t = allTags().filter(function (x) { return x.id === id; })[0];
+        label = t ? t.label : id;
+      }
+      return { id: id, label: label };
+    });
+  }
+
   function handleSaveDraft() {
     if (!state.draft) return;
     var now = Date.now();
@@ -456,7 +502,7 @@
         if (e.id !== targetId) return e;
         return Object.assign({}, e, {
           mood: state.draft.mood,
-          tags: Array.from(state.draft.tags),
+          tags: snapshotDraftTags(state.draft),
           memo: state.draft.memo,
           status: 'draft',
           updatedAt: now,
@@ -467,7 +513,7 @@
         id: uid('e'),
         date: state.draft.date,
         mood: state.draft.mood,
-        tags: Array.from(state.draft.tags),
+        tags: snapshotDraftTags(state.draft),
         memo: state.draft.memo,
         generatedText: '',
         editedText: '',
@@ -498,7 +544,7 @@
         if (e.id !== state.draft.editingId) return e;
         return Object.assign({}, e, {
           mood: state.draft.mood,
-          tags: Array.from(state.draft.tags),
+          tags: snapshotDraftTags(state.draft),
           memo: state.draft.memo,
           generatedText: state.draft.generatedText,
           editedText: finalText,
@@ -511,7 +557,7 @@
         id: uid('e'),
         date: state.draft.date,
         mood: state.draft.mood,
-        tags: Array.from(state.draft.tags),
+        tags: snapshotDraftTags(state.draft),
         memo: state.draft.memo,
         generatedText: state.draft.generatedText,
         editedText: finalText,
@@ -724,9 +770,9 @@
 
   function renderDraftCard(e) {
     var mood = MOODS.filter(function (m) { return m.value === e.mood; })[0];
-    var tags = (e.tags || []).map(function (tid) {
-      var t = allTags().filter(function (x) { return x.id === tid; })[0];
-      return t ? '<span class="entry-tag-chip">' + escapeHtml(t.label) + '</span>' : '';
+    var tags = (e.tags || []).map(function (ref) {
+      var label = tagRefLabel(ref);
+      return label ? '<span class="entry-tag-chip">' + escapeHtml(label) + '</span>' : '';
     }).join('');
     return '<div class="entry-card draft" data-action="open-entry" data-id="' + escapeHtml(e.id) + '">' +
       '<div class="entry-card-top">' +
@@ -852,9 +898,9 @@
     html += state.entries.map(function (e) {
       var mood = MOODS.filter(function (m) { return m.value === e.mood; })[0];
       var status = getStatus(e);
-      var tags = (e.tags || []).map(function (tid) {
-        var t = allTags().filter(function (x) { return x.id === tid; })[0];
-        return t ? '<span class="entry-tag-chip">' + escapeHtml(t.label) + '</span>' : '';
+      var tags = (e.tags || []).map(function (ref) {
+        var label = tagRefLabel(ref);
+        return label ? '<span class="entry-tag-chip">' + escapeHtml(label) + '</span>' : '';
       }).join('');
       var text = e.editedText || (status === 'draft' ? (e.memo || '（タグのみ・まだ日記文は未生成です）') : '');
       return '<div class="entry-card ' + (status === 'draft' ? 'draft' : '') + '" data-action="open-entry" data-id="' + escapeHtml(e.id) + '">' +
@@ -897,6 +943,21 @@
         });
         html += '</div>';
       });
+
+      // Tags selected on this entry that are no longer in the visible list
+      // (hidden or otherwise not currently offered) still get shown here,
+      // using the label recorded when the entry was saved, so nothing that
+      // was actually selected silently disappears from view.
+      var visibleIds = visibleTags().map(function (t) { return t.id; });
+      var strayIds = Array.from(d.tags).filter(function (id) { return visibleIds.indexOf(id) === -1; });
+      if (strayIds.length > 0) {
+        html += '<div class="tag-group-title">この記録に選択されている非表示タグ</div><div class="tag-wrap">';
+        strayIds.forEach(function (id) {
+          var label = (d.tagLabels && d.tagLabels[id]) || id;
+          html += '<button class="chip selected chip-stray" data-action="toggle-tag" data-id="' + escapeHtml(id) + '">' + escapeHtml(label) + '</button>';
+        });
+        html += '</div>';
+      }
     } else {
       html += '<div class="empty-note" style="margin-bottom:14px;">タップでタグを削除、▲▼でカテゴリの表示順を変えられます。</div>';
       var groups = allGroups();
@@ -1000,6 +1061,16 @@
       ) +
 
       '<div class="settings-divider"></div>' +
+      '<div class="settings-label">AIへの指示文（プロンプト）' + (state.promptTemplate ? '　✓ カスタム中' : '') + '</div>' +
+      '<div class="settings-desc">日記をどう書かせるか、指示文そのものを確認・編集できます。' +
+      '{{mood}}・{{tags}}・{{memo}}の3つはその日の内容に自動で置き換わるので、そのまま残してください。</div>' +
+      '<textarea class="settings-input mono-area prompt-area" data-bind="promptTemplateInput">' + escapeHtml(state.promptTemplate ? state.promptTemplate : (window.DIARY_PROMPT_TEMPLATE || '')) + '</textarea>' +
+      '<div class="settings-actions">' +
+      '<button class="save-btn" data-action="save-prompt-template">この指示文を保存</button>' +
+      '<button class="ghost-btn" data-action="reset-prompt-template">デフォルトに戻す</button>' +
+      '</div>' +
+
+      '<div class="settings-divider"></div>' +
       '<div class="settings-label">自動同期（Supabase）' + (syncOn ? '　✓ 有効' : '') + '</div>' +
       '<div class="settings-desc">設定すると、スマホとPCなど複数端末で自動的にデータが同期されます。' +
       '同期パスフレーズは実質的なパスワードです。他人に教えず、長めの文字列にしてください。</div>' +
@@ -1039,8 +1110,19 @@
     if (state.view === 'record') {
       header += '<button class="back-btn" data-action="go-home" aria-label="戻る">' + ICONS.back + '</button>';
     }
-    header += '<div class="app-header-titles"><div class="app-eyebrow mincho">ぽつり、と記す</div>' +
-      '<div class="app-title mincho">' + escapeHtml(headerTitle()) + '</div></div>';
+    header += '<div class="app-header-titles"><div class="app-eyebrow mincho">ぽつり、と記す</div>';
+    if (state.view === 'record' && state.draft) {
+      var prevEntry = findAdjacentEntry(state.draft.date, -1);
+      var nextEntry = findAdjacentEntry(state.draft.date, 1);
+      header += '<div class="app-title-row">' +
+        '<button class="day-nav" data-action="go-prev-day" aria-label="前の記録" ' + (prevEntry ? '' : 'disabled') + '>‹</button>' +
+        '<div class="app-title mincho">' + escapeHtml(headerTitle()) + '</div>' +
+        '<button class="day-nav" data-action="go-next-day" aria-label="次の記録" ' + (nextEntry ? '' : 'disabled') + '>›</button>' +
+        '</div>';
+    } else {
+      header += '<div class="app-title mincho">' + escapeHtml(headerTitle()) + '</div>';
+    }
+    header += '</div>';
     if (state.view !== 'record') {
       header += '<button class="settings-btn" data-action="open-settings" aria-label="設定">' + ICONS.settings + '</button>';
     }
@@ -1088,6 +1170,8 @@
       switch (action) {
         case 'go-home': state.view = 'home'; state.draft = null; render(); break;
         case 'go-list': state.view = 'list'; render(); break;
+        case 'go-prev-day': goToAdjacentEntry(-1); break;
+        case 'go-next-day': goToAdjacentEntry(1); break;
         case 'start-today': startToday(); break;
         case 'open-entry': {
           var id = btn.getAttribute('data-id');
@@ -1116,6 +1200,22 @@
         case 'open-settings': state.showSettings = true; render(); break;
         case 'close-settings': state.showSettings = false; render(); break;
         case 'save-api-key': saveAiSettings(); break;
+        case 'save-prompt-template': {
+          var promptEl = document.querySelector('[data-bind="promptTemplateInput"]');
+          var val = promptEl ? promptEl.value : '';
+          var defaultVal = window.DIARY_PROMPT_TEMPLATE || '';
+          state.promptTemplate = (val.trim() === defaultVal.trim()) ? '' : val;
+          if (state.promptTemplate) localStorage.setItem(STORAGE_KEYS.promptTemplate, state.promptTemplate);
+          else localStorage.removeItem(STORAGE_KEYS.promptTemplate);
+          render();
+          break;
+        }
+        case 'reset-prompt-template': {
+          state.promptTemplate = '';
+          localStorage.removeItem(STORAGE_KEYS.promptTemplate);
+          render();
+          break;
+        }
         case 'set-provider': {
           state.aiProvider = btn.getAttribute('data-provider');
           localStorage.setItem(STORAGE_KEYS.aiProvider, state.aiProvider);
@@ -1198,6 +1298,7 @@
       case 'anthropicModelInput': state.anthropicModel = el.value; break;
       case 'geminiApiKeyInput': state.geminiApiKey = el.value; break;
       case 'geminiModelInput': state.geminiModel = el.value; break;
+      case 'promptTemplateInput': state.promptTemplate = el.value; break;
       default: break;
     }
     // Deliberately not calling render() here so the input keeps focus/caret.

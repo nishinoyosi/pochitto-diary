@@ -61,6 +61,13 @@ html, body {
 .app-header-titles { display: flex; flex-direction: column; gap: 2px; }
 .app-eyebrow { font-size: 11px; letter-spacing: 0.14em; color: var(--ink-soft); }
 .app-title { font-size: 21px; font-weight: 700; color: var(--indigo-deep); }
+.app-title-row { display: flex; align-items: center; gap: 8px; }
+.day-nav {
+  background: none; border: 1px solid var(--line); border-radius: 8px;
+  width: 26px; height: 26px; cursor: pointer; color: var(--indigo); font-size: 14px;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0;
+}
+.day-nav:disabled { opacity: 0.3; cursor: default; }
 
 .app-body { flex: 1; overflow-y: auto; padding: 20px 22px 90px 26px; }
 
@@ -137,6 +144,7 @@ html, body {
 .group-move-btns { display: flex; gap: 4px; }
 .chip-deletable { color: var(--hanko); border-color: #E3C7C3; }
 .chip-restorable { color: var(--moss); border-color: #C9D6C6; }
+.chip-stray { border-style: dashed; }
 .tag-wrap { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
   background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
