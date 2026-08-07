@@ -871,9 +871,16 @@
       var status = byDate[dateStr];
       var cls = 'cal-cell';
       if (dateStr === todayS) cls += ' today';
-      if (status) cls += ' has-entry ' + status;
       var entry = entryByDate[dateStr];
-      html += '<div class="' + cls + '"' + (entry ? ' data-action="open-entry" data-id="' + escapeHtml(entry.id) + '"' : '') + '>' +
+      var actionAttr = '';
+      if (entry) {
+        cls += ' has-entry ' + status;
+        actionAttr = ' data-action="open-entry" data-id="' + escapeHtml(entry.id) + '"';
+      } else if (dateStr <= todayS) {
+        cls += ' clickable-empty';
+        actionAttr = ' data-action="cal-new-day" data-date="' + dateStr + '"';
+      }
+      html += '<div class="' + cls + '"' + actionAttr + '>' +
         '<span class="cal-daynum">' + day + '</span>' +
         (status ? '<span class="cal-dot"></span>' : '') +
         '</div>';
@@ -884,6 +891,7 @@
       '<span class="legend-item"><span class="cal-dot-icon done"></span>確定済み</span>' +
       '<span class="legend-item"><span class="cal-dot-icon draft"></span>下書きのみ</span>' +
       '</div>';
+    html += '<div class="cal-hint">空いている日をタップすると、その日の記録を書き足せます</div>';
 
     return html;
   }
@@ -1188,6 +1196,14 @@
         case 'move-group-down': moveGroupOrder(btn.getAttribute('data-group'), 1); break;
         case 'cal-prev': state.calendarMonth = shiftMonth(state.calendarMonth || todayStr().slice(0, 7), -1); render(); break;
         case 'cal-next': state.calendarMonth = shiftMonth(state.calendarMonth || todayStr().slice(0, 7), 1); render(); break;
+        case 'cal-new-day': {
+          var newDate = btn.getAttribute('data-date');
+          state.draft = newDraft(newDate);
+          state.genNotice = '';
+          state.view = 'record';
+          render();
+          break;
+        }
         case 'set-new-tag-group': state.newTagGroup = btn.getAttribute('data-group'); render(); break;
         case 'show-add-group': state.addingGroup = true; render(); focusSoon('[data-bind="newGroupInput"]'); break;
         case 'cancel-add-group': state.addingGroup = false; state.newGroupInput = ''; render(); break;

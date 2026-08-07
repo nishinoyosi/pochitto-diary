@@ -246,11 +246,14 @@ html, body {
 }
 .cal-cell.empty { visibility: hidden; }
 .cal-cell.has-entry { cursor: pointer; background: var(--surface); }
+.cal-cell.clickable-empty { cursor: pointer; }
+.cal-cell.clickable-empty:active { background: var(--surface-soft); }
 .cal-cell.today { box-shadow: inset 0 0 0 2px var(--indigo); }
 .cal-dot { width: 6px; height: 6px; border-radius: 50%; }
 .cal-cell.done .cal-dot { background: var(--moss); }
 .cal-cell.draft .cal-dot { background: none; border: 1.5px solid var(--hanko); }
 .cal-legend { display: flex; gap: 14px; margin-top: 10px; font-size: 11px; color: var(--ink-soft); }
+.cal-hint { font-size: 11px; color: var(--ink-soft); margin-top: 8px; }
 .legend-item { display: flex; align-items: center; gap: 5px; }
 .cal-dot-icon { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .cal-dot-icon.done { background: var(--moss); }

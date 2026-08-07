@@ -1,4 +1,4 @@
-var CACHE_NAME = 'pochitto-diary-v2';
+var CACHE_NAME = 'pochitto-diary-v3';
 var ASSETS = [
   './',
   './index.html',
@@ -33,9 +33,14 @@ self.addEventListener('activate', function (event) {
 self.addEventListener('fetch', function (event) {
   var url = new URL(event.request.url);
 
-  // Never intercept calls to the Anthropic API or third-party font hosts.
-  // These should always hit the network directly, and must never be cached.
-  if (url.hostname.indexOf('anthropic.com') !== -1 || url.hostname.indexOf('fonts.g') !== -1) {
+  // Never intercept calls to AI APIs, Supabase, or font hosts. These must
+  // always hit the network directly and must never be cached.
+  if (
+    url.hostname.indexOf('anthropic.com') !== -1 ||
+    url.hostname.indexOf('generativelanguage.googleapis.com') !== -1 ||
+    url.hostname.indexOf('supabase.co') !== -1 ||
+    url.hostname.indexOf('fonts.g') !== -1
+  ) {
     return;
   }
 
@@ -44,16 +49,18 @@ self.addEventListener('fetch', function (event) {
     return;
   }
 
+  // Network-first: while online, always fetch the latest app code so a
+  // freshly-deployed update is never masked by a stale cached copy. Only
+  // fall back to the cache when the network is unavailable (offline use).
   event.respondWith(
-    caches.match(event.request).then(function (cached) {
-      var networkFetch = fetch(event.request)
-        .then(function (res) {
-          var resClone = res.clone();
-          caches.open(CACHE_NAME).then(function (cache) { cache.put(event.request, resClone); });
-          return res;
-        })
-        .catch(function () { return cached; });
-      return cached || networkFetch;
-    })
+    fetch(event.request)
+      .then(function (res) {
+        var resClone = res.clone();
+        caches.open(CACHE_NAME).then(function (cache) { cache.put(event.request, resClone); });
+        return res;
+      })
+      .catch(function () {
+        return caches.match(event.request);
+      })
   );
 });
